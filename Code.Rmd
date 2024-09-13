@@ -1,0 +1,1073 @@
+---
+title: "CODEBOOK"
+author: "Shrinidhi Rajesh"
+date: "2023-11-19"
+output:
+  html_document: default
+  word_document: default
+---
+
+```#Incidence
+project <- read.table("Project_data.txt", header = TRUE, sep = "|")
+#Splitting the daataset into two column
+incidence <- project[project$EVENT_TYPE == "Incidence", ]
+nrow(incidence)
+#Getting unique values of Areas to filter based on the state
+unique_values <- unique(project$AREA)
+print(unique_values)
+#Splitting based on only the 9 diseases
+unique_values <- unique(project$SITE)
+print(unique_values)
+#List of diseases
+diseases <- c("Female Breast","Colon and Rectum","Kidney and Renal Pelvis","Leukemias","Liver and Intrahepatic Bile Duct","Lung and Bronchus","Hodgkin Lymphoma","Melanomas of the Skin","Prostate")
+#Filtering based on STATES
+incidence_filtered <- subset(incidence, SITE %in% diseases)
+nrow(incidence_filtered)
+states <- c( "Alabama", "Alaska", "Arizona", "Arkansas", "California", "Colorado", "Connecticut", "Delaware", "Florida", "Georgia", "Hawaii", "Idaho", "Illinois", "Indiana", "Iowa", "Kansas", "Kentucky", "Louisiana", "Maine", "Maryland", "Massachusetts", "Michigan", "Minnesota", "Mississippi", "Missouri", "Montana", "Nebraska", "Nevada", "New Hampshire", "New Jersey", "New Mexico", "New York", "North Carolina", "North Dakota", "Ohio", "Oklahoma", "Oregon", "Pennsylvania", "Rhode Island", "South Carolina", "South Dakota", "Tennessee", "Texas", "Utah", "Vermont", "Virginia", "Washington", "West Virginia", "Wisconsin", "Wyoming")
+incidence_data <- subset(incidence_filtered, AREA %in% states)
+#Removing the columns that are not being used in Ranking
+library(dplyr)
+incidence_final <- incidence_data %>%
+select(-AGE_ADJUSTED_CI_LOWER, -AGE_ADJUSTED_CI_UPPER, -CRUDE_CI_LOWER, -CRUDE_CI_UPPER,-CRUDE_RATE,-EVENT_TYPE,-"POPULATION",-"COUNT")
+colnames(incidence_data)
+ncol(incidence_data)
+colnames(incidence_final)
+ncol(incidence_final)
+#Converting to numeric
+incidence_final$AGE_ADJUSTED_RATE <- as.numeric(as.character(incidence_final$AGE_ADJUSTED_RATE))
+#Missing values
+library(mice)
+sum(is.na(incidence_final))
+#Using MICE to impute
+imputed <- mice(incidence_final, m=1, maxit = 50, method = 'pmm', seed = 500)
+summary(imputed)
+incidence_imputed <- complete(imputed)
+#Incidence Filtering for All Races and Male and Female together
+library(dplyr)
+incidence_filtered <- incidence_imputed %>%
+filter(RACE == "All Races" & (SEX == "Male and Female"))
+incidence_filtered2 <- incidence_filtered %>%
+select(-RACE,-SEX) %>%
+filter(YEAR != "2008-2012")
+#There are duplicates in the data set, for instance Arkanzes is duplicated twice for Hodgkin in the year 2002, there are 44 such duplicates, whicha are being removed
+library(dplyr)
+incidence_unique <- incidence_filtered2 %>%
+distinct(SITE, YEAR, AREA, .keep_all = TRUE) %>%
+ungroup()
+
+#Pivoting for getting a multidimensional data
+library(tidyr)
+library(stringr)
+incidence_wide <- incidence_unique %>%
+pivot_wider(
+names_from = SITE,
+values_from = c("AGE_ADJUSTED_RATE"),
+names_sep = "_"
+)%>%
+rename_with(~str_replace_all(., " ", "_"), -c(AREA, YEAR)) %>%
+rename_with(~paste0(., "_AGE_ADJ_RATE"), -c(AREA, YEAR))
+colnames(incidence_wide)
+#tibble to dataframe
+incidence_adjusted <- as.data.frame(incidence_wide)
+head(incidence_adjusted,n=2)
+unique_years <- unique(incidence_adjusted$YEAR)  
+for (year in unique_years) {
+filtered_data <- incidence_adjusted[incidence_adjusted$YEAR == year, , drop = FALSE]  # Ensure drop = FALSE
+filtered_data <- data.frame(filtered_data, row.names = NULL)
+assign(paste0("incidence_", year), filtered_data)
+}
+#Getting the year
+unique_years <- unique(incidence_adjusted$YEAR) 
+results_list <- list()
+#Loop over each year
+for (year in unique_years) {
+#Filtering data 
+filtered_data <- incidence_adjusted[incidence_adjusted$YEAR == year, , drop = FALSE]  # Ensure drop = FALSE
+#Creating a new data frame
+filtered_data <- data.frame(filtered_data, row.names = NULL)
+#Assigning the filtered data to a variable 
+assign(paste0("incidence_", year), filtered_data)
+#Decision Matrix
+decision_matrix <- as.matrix(filtered_data[, 3:11])
+#Normalization
+normalized_matrix <- decision_matrix / sqrt(colSums(decision_matrix^2))
+#Equalized weights
+weights<-c(1/9, 1/9,1/9,1/9,1/9,1/9,1/9,1/9,1/9)
+#Weighted Normalization
+weighted_normalized_matrix <- normalized_matrix
+for (j in seq_along(weights)) {
+weighted_normalized_matrix[, j] <- weighted_normalized_matrix[, j] * weights[j]
+}
+#Positive Ideal Solution
+positive_ideal <- apply(weighted_normalized_matrix, 2, max)
+#Negative Ideal Solution
+negative_ideal <- apply(weighted_normalized_matrix, 2, min)
+#Euclidean distance function
+difference <- function(x, y) {
+sqrt(sum((x - y)^2))
+}
+# Calculating the Euclidean distance to Positive Ideal Solution (PIS)
+ideal_separation <- apply(weighted_normalized_matrix, 1, function(row) difference(row, positive_ideal))
+#Calculating the Euclidean distance to Negative Ideal Solution (NIS)
+negative_ideal_separation <- apply(weighted_normalized_matrix, 1, function(row) difference(row, negative_ideal))
+#Calculating the relative closeness
+relative_closeness <- negative_ideal_separation / (ideal_separation + negative_ideal_separation)
+#Creating a data frame with results for each year
+result_df <- data.frame(STATES = filtered_data$AREA, Rj = relative_closeness)
+#Ranking in decreasing order	
+result_df$Rank <- rank(-result_df$Rj)  
+result_df <- result_df[order(result_df$Rj,decreasing = TRUE), ]
+#Appending to list
+results_list[[year]] <- result_df
+}
+Loop through each years
+for (year in unique_years) {
+print(paste("Results for Year", year))
+print(results_list[[as.character(year)]])
+}
+#Loop to generate plots based on each year
+library(ggplot2)
+unique_years <- unique(incidence_adjusted$YEAR)
+plots_list <- list()
+for (year in unique_years) {
+results_year <- results_list[[as.character(year)]]
+plot <- ggplot(results_year, aes(x = reorder(STATES, -Rj), y = Rj, fill = Rj)) + geom_bar(stat = "identity") + labs(title = paste("Comparison of Rankings for Year", year), x = "State", y = "Relative Closeness") + theme(axis.text.x = element_text(angle = 45, hjust = 1)) + scale_fill_gradient(low = "dark red", high = "dark green")
+plots_list[[paste0("plot_", year)]] <- plot
+}
+#Arranging 3 plots in one page
+library(gridExtra)
+grid.arrange(
+  plots_list$plot_1999,
+  plots_list$plot_2000,
+  plots_list$plot_2001,
+  ncol = 1
+)
+grid.arrange(
+  plots_list$plot_2002,
+  plots_list$plot_2003,
+  plots_list$plot_2004,
+  ncol = 1
+)
+grid.arrange(
+  plots_list$plot_2005,
+  plots_list$plot_2006,
+  plots_list$plot_2007,
+  ncol = 1
+)
+grid.arrange(
+  plots_list$plot_2008,
+  plots_list$plot_2009,
+  plots_list$plot_2010,
+  ncol = 1
+)
+grid.arrange(
+  plots_list$plot_2011,
+  plots_list$plot_2012,
+  ncol = 1
+)
+#The most affected (Rank 1) and least affected (last rank) for each year
+most_affected <- lapply(results_list, function(result_df) {
+result_df[which.min(result_df$Rank), ]
+})
+least_affected <- lapply(results_list, function(result_df) {
+result_df[which.max(result_df$Rank), ]
+})
+most_affected_df <- do.call(rbind, most_affected)
+least_affected_df <- do.call(rbind, least_affected)
+most_affected_df
+least_affected_df
+#Creating a data frame with ranks for each year
+ranks_df <- data.frame(Year = unique_years)
+for (rank in 1:max(sapply(results_list, function(x) max(x$Rank)))) {
+ranks_df[paste0("Rank_", rank)] <- sapply(results_list, function(result_df) {
+area <- result_df[result_df$Rank == rank, "STATES"]
+if (length(area) == 0) {
+return(NA)
+} else {
+return(area)
+}
+})
+}
+ranks_df
+library(knitr)
+library(kableExtra)
+kable(ranks_df, "html") %>%
+kable_styling()
+#Creating a data frame with ranks for each year
+ranks_df <- data.frame(STATES = unique(incidence_adjusted$AREA))
+for (year in unique_years) {
+ranks_df[[as.character(year)]] <- sapply(ranks_df$STATES, function(state) {
+result_df <- results_list[[as.character(year)]]
+rank <- result_df[result_df$STATES == state, "Rank"]
+if (length(rank) == 0) {
+return(NA)
+} else {
+return(rank)
+}
+})
+}
+ranks_df[, -1] <- lapply(ranks_df[, -1], as.numeric)
+ranks_df
+kable(ranks_df, "html") %>%
+kable_styling()
+#Initializing an empty data frame for overall ranks
+overall_ranking <- data.frame(STATES = character(0), Overall_Rank = integer(0), Frequency = integer(0))
+#Loop through each state
+for (state in unique(ranks_df$STATES)) {
+state_ranks <- unlist(ranks_df[ranks_df$STATES == state, -1])
+rank_counts <- table(state_ranks, useNA = "ifany")
+max_rank <- as.integer(names(which.max(rank_counts)))
+max_rank_frequency <- as.integer(max(rank_counts))
+if (is.na(max_rank)) {
+max_rank <- as.integer(names(rank_counts[order(-rank_counts)])[2])
+max_rank_frequency <- as.integer(rank_counts[order(-rank_counts)][2])
+}
+current_state_df <- data.frame(STATES = state, Overall_Rank = max_rank, Frequency = max_rank_frequency)
+overall_ranking <- rbind(overall_ranking, current_state_df)
+}
+#Order by overall rank
+overall_ranking1 <- overall_ranking[order(overall_ranking$Overall_Rank), ]
+overall_ranking1
+Weighted1<-ggplot(overall_ranking1, aes(x = reorder(STATES, Overall_Rank), y = Overall_Rank, fill = as.factor(Frequency))) + geom_bar(stat = "identity", position = "dodge") + labs(title = "Overall Ranking of States Based on Equalized Weights",x = "States",y = "Overall Rank") + scale_fill_manual(values = c("lightblue", "lightgreen", "lightpink", "lightyellow", "lightgray")) + theme_minimal() + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+#Getting the year
+unique_years <- unique(incidence_adjusted$YEAR) 
+results_list <- list()
+#Using the Colsums/total approach
+columns <- incidence_adjusted[, 3:11]
+column_sums <- colSums(columns)
+total_sum <- sum(as.matrix(columns))
+column_proportions <- column_sums / total_sum
+column_proportions
+#Using this as weights
+#Loop over each year
+for (year in unique_years) {
+#Filtering data 
+filtered_data <- incidence_adjusted[incidence_adjusted$YEAR == year, , drop = FALSE]  # Ensure drop = FALSE
+#Creating a new data frame
+filtered_data <- data.frame(filtered_data, row.names = NULL)
+#Assigning the filtered data to a variable 
+assign(paste0("incidence_", year), filtered_data)
+#Decision Matrix
+decision_matrix <- as.matrix(filtered_data[, 3:11])
+#Normalization
+normalized_matrix <- decision_matrix / sqrt(colSums(decision_matrix^2))
+#Weights based on their prevalence
+weights<-c(0.10722356 , 0.27673279 , 0.01007456 , 0.03270314, 0.02939148, 0.01278555, 0.14989440 ,0.04296131, 0.33823321 )
+#Weighted Normalization
+weighted_normalized_matrix <- normalized_matrix
+for (j in seq_along(weights)) {
+weighted_normalized_matrix[, j] <- weighted_normalized_matrix[, j] * weights[j]
+}
+#Positive Ideal Solution
+positive_ideal <- apply(weighted_normalized_matrix, 2, max)
+#Negative Ideal Solution
+negative_ideal <- apply(weighted_normalized_matrix, 2, min)
+#Euclidean distance function
+difference <- function(x, y) {
+sqrt(sum((x - y)^2))
+}
+# Calculating the Euclidean distance to Positive Ideal Solution (PIS)
+ideal_separation <- apply(weighted_normalized_matrix, 1, function(row) difference(row, positive_ideal))
+#Calculating the Euclidean distance to Negative Ideal Solution (NIS)
+negative_ideal_separation <- apply(weighted_normalized_matrix, 1, function(row) difference(row, negative_ideal))
+#Calculating the relative closeness
+relative_closeness <- negative_ideal_separation / (ideal_separation + negative_ideal_separation)
+#Creating a data frame with results for each year
+result_df <- data.frame(STATES = filtered_data$AREA, Rj = relative_closeness)
+#Ranking in decreasing order
+result_df$Rank <- rank(-result_df$Rj)  
+result_df <- result_df[order(result_df$Rj,decreasing = TRUE), ]
+#Appending to list
+results_list[[year]] <- result_df
+}
+#Loop through each years
+for (year in unique_years) {
+print(paste("Results for Year", year))
+print(results_list[[as.character(year)]])
+}
+#Loop to generate plots based on each year
+library(ggplot2)
+unique_years <- unique(incidence_adjusted$YEAR)
+plots_list <- list()
+for (year in unique_years) {
+results_year <- results_list[[as.character(year)]]
+plot <- ggplot(results_year, aes(x = reorder(STATES, -Rj), y = Rj, fill = Rj)) + geom_bar(stat = "identity") + labs(title = paste("Comparison of Rankings for Year", year), x = "State", y = "Relative Closeness") + theme(axis.text.x = element_text(angle = 45, hjust = 1)) + scale_fill_gradient(low = "dark red", high = "dark green")
+plots_list[[paste0("plot_", year)]] <- plot
+}
+#Arranging 3 plots in one page
+library(gridExtra)
+grid.arrange(
+  plots_list$plot_1999,
+  plots_list$plot_2000,
+  plots_list$plot_2001,
+  ncol = 1
+)
+grid.arrange(
+  plots_list$plot_2002,
+  plots_list$plot_2003,
+  plots_list$plot_2004,
+  ncol = 1
+)
+grid.arrange(
+  plots_list$plot_2005,
+  plots_list$plot_2006,
+  plots_list$plot_2007,
+  ncol = 1
+)
+grid.arrange(
+  plots_list$plot_2008,
+  plots_list$plot_2009,
+  plots_list$plot_2010,
+  ncol = 1
+)
+grid.arrange(
+  plots_list$plot_2011,
+  plots_list$plot_2012,
+  ncol = 1
+)
+#The most affected (Rank 1) and least affected (last rank) for each year
+most_affected <- lapply(results_list, function(result_df) {
+result_df[which.min(result_df$Rank), ]
+})
+least_affected <- lapply(results_list, function(result_df) {
+result_df[which.max(result_df$Rank), ]
+})
+most_affected_df <- do.call(rbind, most_affected)
+least_affected_df <- do.call(rbind, least_affected)
+most_affected_df
+least_affected_df
+#Creating a data frame with ranks for each year
+ranks_df <- data.frame(Year = unique_years)
+for (rank in 1:max(sapply(results_list, function(x) max(x$Rank)))) {
+ranks_df[paste0("Rank_", rank)] <- sapply(results_list, function(result_df) {
+area <- result_df[result_df$Rank == rank, "STATES"]
+if (length(area) == 0) {
+return(NA)
+} else {
+return(area)
+}
+})
+}
+ranks_df
+library(knitr)
+library(kableExtra)
+kable(ranks_df, "html") %>%
+kable_styling()
+#Creating a data frame with ranks for each year
+ranks_df <- data.frame(STATES = unique(incidence_adjusted$AREA))
+for (year in unique_years) {
+ranks_df[[as.character(year)]] <- sapply(ranks_df$STATES, function(state) {
+result_df <- results_list[[as.character(year)]]
+rank <- result_df[result_df$STATES == state, "Rank"]
+if (length(rank) == 0) {
+return(NA)
+} else {
+return(rank)
+}
+})
+}
+ranks_df[, -1] <- lapply(ranks_df[, -1], as.numeric)
+ranks_df
+kable(ranks_df, "html") %>%
+kable_styling()
+#Initializing an empty data frame for overall ranks
+overall_ranking <- data.frame(STATES = character(0), Overall_Rank = integer(0), Frequency = integer(0))
+#Loop through each state
+for (state in unique(ranks_df$STATES)) {
+state_ranks <- unlist(ranks_df[ranks_df$STATES == state, -1])
+rank_counts <- table(state_ranks, useNA = "ifany")
+max_rank <- as.integer(names(which.max(rank_counts)))
+max_rank_frequency <- as.integer(max(rank_counts))
+if (is.na(max_rank)) {
+max_rank <- as.integer(names(rank_counts[order(-rank_counts)])[2])
+max_rank_frequency <- as.integer(rank_counts[order(-rank_counts)][2])
+}
+current_state_df <- data.frame(STATES = state, Overall_Rank = max_rank, Frequency = max_rank_frequency)
+overall_ranking <- rbind(overall_ranking, current_state_df)
+}
+#Order by overall rank
+overall_ranking2 <- overall_ranking[order(overall_ranking$Overall_Rank), ]
+overall_ranking2
+
+Weighted2<-ggplot(overall_ranking2, aes(x = reorder(STATES, Overall_Rank), y = Overall_Rank, fill = as.factor(Frequency))) + geom_bar(stat = "identity", position = "dodge") + labs(title = "Overall Ranking of States Based On Normalized ColSums Approach",x = "States",y = "Overall Rank") + scale_fill_manual(values = c("blue", "green", "black", "yellow", "red","purple","orange")) + theme_minimal() + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+#Getting the year
+unique_years <- unique(incidence_adjusted$YEAR) 
+results_list <- list()
+#Weights based on normalized age adjusted rate
+#Using this as weights
+#0.10680257,0.278528695,0.006204299,0.033458897,0.030578329,0.014181254,0.149567915,0.041657434,0.339020607
+#Loop over each year
+for (year in unique_years) {
+#Filtering data 
+filtered_data <- incidence_adjusted[incidence_adjusted$YEAR == year, , drop = FALSE]  # Ensure drop = FALSE
+#Creating a new data frame
+filtered_data <- data.frame(filtered_data, row.names = NULL)
+#Assigning the filtered data to a variable 
+assign(paste0("incidence_", year), filtered_data)
+#Decision Matrix
+decision_matrix <- as.matrix(filtered_data[, 3:11])
+#Normalization
+normalized_matrix <- decision_matrix / sqrt(colSums(decision_matrix^2))
+#Weights based on their prevalence
+weights<-c(0.10680257,0.278528695,0.006204299,0.033458897,0.030578329,0.014181254,0.149567915,0.041657434,0.339020607)
+#Weighted Normalization
+weighted_normalized_matrix <- normalized_matrix
+for (j in seq_along(weights)) {
+weighted_normalized_matrix[, j] <- weighted_normalized_matrix[, j] * weights[j]
+}
+#Positive Ideal Solution
+positive_ideal <- apply(weighted_normalized_matrix, 2, max)
+#Negative Ideal Solution
+negative_ideal <- apply(weighted_normalized_matrix, 2, min)
+#Euclidean distance function
+difference <- function(x, y) {
+sqrt(sum((x - y)^2))
+}
+# Calculating the Euclidean distance to Positive Ideal Solution (PIS)
+ideal_separation <- apply(weighted_normalized_matrix, 1, function(row) difference(row, positive_ideal))
+#Calculating the Euclidean distance to Negative Ideal Solution (NIS)
+negative_ideal_separation <- apply(weighted_normalized_matrix, 1, function(row) difference(row, negative_ideal))
+#Calculating the relative closeness
+relative_closeness <- negative_ideal_separation / (ideal_separation + negative_ideal_separation)
+#Creating a data frame with results for each year
+result_df <- data.frame(STATES = filtered_data$AREA, Rj = relative_closeness)
+#Ranking in decreasing order
+result_df$Rank <- rank(-result_df$Rj)  
+result_df <- result_df[order(result_df$Rj,decreasing = TRUE), ]
+#Appending to list
+results_list[[year]] <- result_df
+}
+#Loop through each years
+for (year in unique_years) {
+print(paste("Results for Year", year))
+print(results_list[[as.character(year)]])
+}
+#Loop to generate plots based on each year
+library(ggplot2)
+unique_years <- unique(incidence_adjusted$YEAR)
+plots_list <- list()
+for (year in unique_years) {
+results_year <- results_list[[as.character(year)]]
+plot <- ggplot(results_year, aes(x = reorder(STATES, -Rj), y = Rj, fill = Rj)) + geom_bar(stat = "identity") + labs(title = paste("Comparison of Rankings for Year", year), x = "State", y = "Relative Closeness") + theme(axis.text.x = element_text(angle = 45, hjust = 1)) + scale_fill_gradient(low = "dark red", high = "dark green")
+plots_list[[paste0("plot_", year)]] <- plot
+}
+#Arranging 3 plots in one page
+library(gridExtra)
+grid.arrange(
+  plots_list$plot_1999,
+  plots_list$plot_2000,
+  plots_list$plot_2001,
+  ncol = 1
+)
+grid.arrange(
+  plots_list$plot_2002,
+  plots_list$plot_2003,
+  plots_list$plot_2004,
+  ncol = 1
+)
+grid.arrange(
+  plots_list$plot_2005,
+  plots_list$plot_2006,
+  plots_list$plot_2007,
+  ncol = 1
+)
+grid.arrange(
+  plots_list$plot_2008,
+  plots_list$plot_2009,
+  plots_list$plot_2010,
+  ncol = 1
+)
+grid.arrange(
+  plots_list$plot_2011,
+  plots_list$plot_2012,
+  ncol = 1
+)
+#The most affected (Rank 1) and least affected (last rank) for each year
+most_affected <- lapply(results_list, function(result_df) {
+result_df[which.min(result_df$Rank), ]
+})
+least_affected <- lapply(results_list, function(result_df) {
+result_df[which.max(result_df$Rank), ]
+})
+most_affected_df <- do.call(rbind, most_affected)
+least_affected_df <- do.call(rbind, least_affected)
+most_affected_df
+least_affected_df
+
+#Creating a data frame with ranks for each year
+ranks_df <- data.frame(Year = unique_years)
+for (rank in 1:max(sapply(results_list, function(x) max(x$Rank)))) {
+ranks_df[paste0("Rank_", rank)] <- sapply(results_list, function(result_df) {
+area <- result_df[result_df$Rank == rank, "STATES"]
+if (length(area) == 0) {
+return(NA)
+} else {
+return(area)
+}
+})
+}
+ranks_df
+library(knitr)
+library(kableExtra)
+kable(ranks_df, "html") %>%
+kable_styling()
+
+#Creating a data frame with ranks for each year
+ranks_df <- data.frame(STATES = unique(incidence_adjusted$AREA))
+for (year in unique_years) {
+ranks_df[[as.character(year)]] <- sapply(ranks_df$STATES, function(state) {
+result_df <- results_list[[as.character(year)]]
+rank <- result_df[result_df$STATES == state, "Rank"]
+if (length(rank) == 0) {
+return(NA)
+} else {
+return(rank)
+}
+})
+}
+ranks_df[, -1] <- lapply(ranks_df[, -1], as.numeric)
+ranks_df
+kable(ranks_df, "html") %>%
+kable_styling()
+#Initializing an empty data frame for overall ranks
+overall_ranking <- data.frame(STATES = character(0), Overall_Rank = integer(0), Frequency = integer(0))
+#Loop through each state
+for (state in unique(ranks_df$STATES)) {
+state_ranks <- unlist(ranks_df[ranks_df$STATES == state, -1])
+rank_counts <- table(state_ranks, useNA = "ifany")
+max_rank <- as.integer(names(which.max(rank_counts)))
+max_rank_frequency <- as.integer(max(rank_counts))
+if (is.na(max_rank)) {
+max_rank <- as.integer(names(rank_counts[order(-rank_counts)])[2])
+max_rank_frequency <- as.integer(rank_counts[order(-rank_counts)][2])
+}
+current_state_df <- data.frame(STATES = state, Overall_Rank = max_rank, Frequency = max_rank_frequency)
+overall_ranking <- rbind(overall_ranking, current_state_df)
+}
+#Order by overall rank
+overall_ranking3 <- overall_ranking[order(overall_ranking$Overall_Rank), ]
+overall_ranking3
+Weighted3<-ggplot(overall_ranking3, aes(x = reorder(STATES, Overall_Rank), y = Overall_Rank, fill = as.factor(Frequency))) + geom_bar(stat = "identity", position = "dodge") + labs(title = "Overall Ranking of States Based on Normalized Age Adjusted Rate",x = "States",y = "Overall Rank") + scale_fill_manual(values = c("darkblue", "darkgreen", "darkred","brown" , "darkgrey","gold","skyblue")) + theme_minimal() + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+#Comparisons
+grid.arrange(
+  Weighted1,
+  Weighted2,
+  Weighted3,
+  ncol = 1
+)
+combined_rankings <- merge(overall_ranking[, c("STATES", "Overall_Rank")], overall_ranking2[, c("STATES", "Overall_Rank")],overall_ranking3[, c("STATES", "Overall_Rank")] by = "STATES", suffixes = c("", "_2"), all = TRUE)
+combined_rankings <- combined_rankings[order(combined_rankings$Overall_Rank), ]
+print(combined_rankings)
+library(ggplot2)
+cancers_incidence <- c("Female Breast", "Lung and Bronchus", "Prostate", "Colon and Rectum", "Melanoma of the Skin", "Kidney and Renal Pelvis", "Leukemias", "Liver and Intrahepatic Bile Duct", "Hodgkin Lymphoma")
+incidence_counts <- c(4927392, 4680679, 4656034, 3211793, 1471620, 1172278, 1009098, 558320, 186822)
+incidence_dataset <- data.frame(CancerType = cancers_incidence, Count = incidence_counts)
+# Create a pie chart with count labels only
+ggplot(incidence_dataset, aes(x = "", y = Count, fill = CancerType)) +
+  geom_bar(stat = "identity", width = 1) +
+  theme_minimal() +
+  labs(title = "Cancer Incidence Counts by Type", x = NULL, y = NULL) +
+  theme(axis.text = element_blank(), legend.position = "right") +
+  coord_polar("y") +
+  geom_text(aes(label = format(Count, big.mark = ",")),
+            position = position_stack(vjust = 0.5),
+            color = "black", size = 4,
+            angle = 45)
+
+
+
+library(ggplot2)
+cancers_mortality <- c("Colon and Rectum", "Liver and Intrahepatic Bile Duct", "Lung and Bronchus","Melanoma of the Skin", "Female Breast", "Prostate","Kidney and Renal Pelvis", "Hodgkin Lymphoma", "Leukemias")
+mortality_counts <- c(1173520, 446951, 3380781, 184414, 909472, 650789, 288147, 26096, 495813)
+mortality_dataset <- data.frame(CancerType = cancers_mortality, Count = mortality_counts)
+# Create a pie chart with count labels only
+ggplot(mortality_dataset, aes(x = "", y = Count, fill = CancerType)) +
+  geom_bar(stat = "identity", width = 1) +
+  theme_minimal() +
+  labs(title = "Cancer Mortality Counts by Type", x = NULL, y = NULL) +
+  theme(axis.text = element_blank(), legend.position = "right") +
+  coord_polar("y") +
+  geom_text(aes(label = format(Count, big.mark = ",")),
+            position = position_stack(vjust = 0.5),
+            color = "black", size = 4,
+            angle = 30)
+#Mortality
+project <- read.table("Project_data.txt", header = TRUE, sep = "|")
+#Splitting the daataset into two column
+mortality <- project[project$EVENT_TYPE == "Mortality", ]
+nrow(mortality)
+#Getting unique values of Areas to filter based on the state
+unique_values <- unique(project$AREA)
+print(unique_values)
+#Splitting based on only the 9 diseases
+unique_values <- unique(project$SITE)
+print(unique_values)
+#List of diseases
+diseases <- c("Female Breast","Colon and Rectum","Kidney and Renal Pelvis","Leukemias","Liver and Intrahepatic Bile Duct","Lung and Bronchus","Hodgkin Lymphoma","Melanomas of the Skin","Prostate")
+#Filtering based on STATES
+mortality_filtered <- subset(mortality, SITE %in% diseases)
+nrow(mortality_filtered)
+states <- c( "Alabama", "Alaska", "Arizona", "Arkansas", "California", "Colorado", "Connecticut", "Delaware", "Florida", "Georgia", "Hawaii", "Idaho", "Illinois", "Indiana", "Iowa", "Kansas", "Kentucky", "Louisiana", "Maine", "Maryland", "Massachusetts", "Michigan", "Minnesota", "Mississippi", "Missouri", "Montana", "Nebraska", "Nevada", "New Hampshire", "New Jersey", "New Mexico", "New York", "North Carolina", "North Dakota", "Ohio", "Oklahoma", "Oregon", "Pennsylvania", "Rhode Island", "South Carolina", "South Dakota", "Tennessee", "Texas", "Utah", "Vermont", "Virginia", "Washington", "West Virginia", "Wisconsin", "Wyoming")
+mortality_data <- subset(mortality_filtered, AREA %in% states)
+#Removing the columns that are not being used in Ranking
+library(dplyr)
+mortality_final <- mortality_data %>%
+select(-AGE_ADJUSTED_CI_LOWER, -AGE_ADJUSTED_CI_UPPER, -CRUDE_CI_LOWER, -CRUDE_CI_UPPER,-CRUDE_RATE,-EVENT_TYPE,-"POPULATION",-"COUNT")
+colnames(mortality_data)
+ncol(mortality_data)
+colnames(mortality_final)
+ncol(mortality_final)
+#Converting to numeric
+mortality_final$AGE_ADJUSTED_RATE <- as.numeric(as.character(mortality_final$AGE_ADJUSTED_RATE))
+#Missing values
+library(mice)
+sum(is.na(mortality_final))
+#Using MICE to impute
+imputed <- mice(mortality_final, m=1, maxit = 50, method = 'pmm', seed = 500)
+summary(imputed)
+mortality_imputed <- complete(imputed)
+#mortality Filtering for All Races and Male and Female together
+library(dplyr)
+mortality_filtered <- mortality_imputed %>%
+filter(RACE == "All Races" & (SEX == "Male and Female"))
+mortality_filtered2 <- mortality_filtered %>%
+select(-RACE, -SEX) %>%
+filter(YEAR != "2008-2012")
+
+#Pivoting for getting a multidimensional data
+library(tidyr)
+library(stringr)
+mortality_wide <- mortality_filtered2 %>%
+pivot_wider(
+names_from = SITE,
+values_from = c("AGE_ADJUSTED_RATE"),
+names_sep = "_"
+)%>%
+rename_with(~str_replace_all(., " ", "_"), -c(AREA, YEAR)) %>%
+rename_with(~paste0(., "_AGE_ADJ_RATE"), -c(AREA, YEAR))
+colnames(mortality_wide)
+#tibble to dataframe
+mortality_adjusted <- as.data.frame(mortality_wide)
+head(mortality_adjusted,n=2)
+unique_years <- unique(mortality_adjusted$YEAR)  
+for (year in unique_years) {
+filtered_data <- mortality_adjusted[mortality_adjusted$YEAR == year, , drop = FALSE]  # Ensure drop = FALSE
+filtered_data <- data.frame(filtered_data, row.names = NULL)
+assign(paste0("mortality_", year), filtered_data)
+}
+#mortality
+project <- read.table("Project_data.txt", header = TRUE, sep = "|")
+#Splitting the daataset into two column
+mortality <- project[project$EVENT_TYPE == "mortality", ]
+nrow(mortality)
+#Getting unique values of Areas to filter based on the state
+unique_values <- unique(project$AREA)
+print(unique_values)
+#SPlitting based on only the 9 diseases
+unique_values <- unique(project$SITE)
+print(unique_values)
+# List of desired SITE values
+diseases <- c("Female Breast","Colon and Rectum","Kidney and Renal Pelvis","Leukemias","Liver and Intrahepatic Bile Duct","Lung and Bronchus","Hodgkin Lymphoma","Melanomas of the Skin","Prostate")
+# Filter the data frame based on the desired SITE values
+mortality_filtered <- subset(mortality, SITE %in% diseases)
+# Display or further process the filtered data frame
+nrow(mortality_filtered)
+#filter further based on 50 states
+states <- c( "Alabama", "Alaska", "Arizona", "Arkansas", "California", "Colorado", "Connecticut", "Delaware", "Florida", "Georgia", "Hawaii", "Idaho", "Illinois", "Indiana", "Iowa", "Kansas", "Kentucky", "Louisiana", "Maine", "Maryland", "Massachusetts", "Michigan", "Minnesota", "Mississippi", "Missouri", "Montana", "Nebraska", "Nevada", "New Hampshire", "New Jersey", "New Mexico", "New York", "North Carolina", "North Dakota", "Ohio", "Oklahoma", "Oregon", "Pennsylvania", "Rhode Island", "South Carolina", "South Dakota", "Tennessee", "Texas", "Utah", "Vermont", "Virginia", "Washington", "West Virginia", "Wisconsin", "Wyoming")
+mortality_data <- subset(mortality_filtered, AREA %in% states)
+#Removing the columns that are not being used in Ranking
+library(dplyr)
+mortality_final <- mortality_data %>%
+  select(-AGE_ADJUSTED_CI_LOWER, -AGE_ADJUSTED_CI_UPPER, -CRUDE_CI_LOWER, -CRUDE_CI_UPPER,-CRUDE_RATE,-EVENT_TYPE,-"POPULATION",-"COUNT")
+colnames(mortality_data)
+ncol(mortality_data)
+colnames(mortality_final)
+ncol(mortality_final)
+#Converting to numeric
+mortality_final$AGE_ADJUSTED_RATE <- as.numeric(as.character(mortality_final$AGE_ADJUSTED_RATE))
+library(mice)
+#Missing values
+sum(is.na(mortality_final))
+#Using MICE to impute
+imputed <- mice(mortality_final, m=1, maxit = 50, method = 'pmm', seed = 500)
+summary(imputed)
+mortality_imputed <- complete(imputed)
+#mortality Filtering for All Races and Male and Female together
+library(dplyr)
+mortality_filtered <- mortality_imputed %>%
+  filter(RACE == "All Races" & (SEX == "Male and Female"))
+mortality_filtered2 <- mortality_filtered %>%
+  select(-RACE,-SEX)
+#There are duplicates in the data set, for instance Arkanzes is duplicated twice for Hodgkin in the year 2002, there are 44 such duplicates, whicha are being removed
+library(dplyr)
+mortality_unique <- mortality_filtered2 %>%
+  distinct(SITE, YEAR, AREA, .keep_all = TRUE) %>%
+  ungroup()
+#Pivoting for getting a multidimensional data
+library(tidyr)
+
+library(stringr)
+mortality_wide <- mortality_unique %>%
+  pivot_wider(
+    names_from = SITE,
+    values_from = c("AGE_ADJUSTED_RATE"),
+    names_sep = "_"
+  ) %>%
+  rename_with(~str_replace_all(., " ", "_"), -c(AREA, YEAR)) %>%
+  rename_with(~paste0(., "_AGE_ADJ_RATE"), -c(AREA, YEAR))
+# Check the column names
+colnames(mortality_wide)
+#library(readr)
+#write_csv(mortality_wide, path = "mortality_wide.csv")
+# tibble to dataframe
+mortality_adjusted <- as.data.frame(mortality_wide)
+head(mortality_adjusted,n=2)
+# Get unique years in the dataset
+unique_years <- unique(mortality_adjusted$YEAR)  # Note: using uppercase YEAR
+# Loop over each unique year
+for (year in unique_years) {
+  # Filter data for the current year
+  filtered_data <- mortality_adjusted[mortality_adjusted$YEAR == year, , drop = FALSE]  # Ensure drop = FALSE
+  # Create a new data frame without row names
+  filtered_data <- data.frame(filtered_data, row.names = NULL)
+    # Assign the filtered data to a variable with a specific name
+  assign(paste0("mortality_", year), filtered_data)
+}
+#Getting the year
+unique_years <- unique(mortality_adjusted$YEAR) 
+results_list <- list()
+#Using the Colsums/total approach
+columns <- mortality_adjusted[, 3:11]
+column_sums <- colSums(columns)
+total_sum <- sum(as.matrix(columns))
+column_proportions <- column_sums / total_sum
+column_proportions
+#Using this as weights
+#Loop over each year
+for (year in unique_years) {
+#Filtering data 
+filtered_data <- mortality_adjusted[mortality_adjusted$YEAR == year, , drop = FALSE]  # Ensure drop = FALSE
+#Creating a new data frame
+filtered_data <- data.frame(filtered_data, row.names = NULL)
+#Assigning the filtered data to a variable 
+assign(paste0("mortality_", year), filtered_data)
+#Decision Matrix
+decision_matrix <- as.matrix(filtered_data[, 3:11])
+#Normalization
+normalized_matrix <- decision_matrix / sqrt(colSums(decision_matrix^2))
+#Weights based on their prevalence
+weights<-c(0.11982596  ,  0.15806375 , 0.06261883  ,  0.02865309 ,  0.04933145 , 0.03382533 , 0.35079339  , 0.02250566,  0.17438254  )
+#Weighted Normalization
+weighted_normalized_matrix <- normalized_matrix
+for (j in seq_along(weights)) {
+weighted_normalized_matrix[, j] <- weighted_normalized_matrix[, j] * weights[j]
+}
+#Positive Ideal Solution
+positive_ideal <- apply(weighted_normalized_matrix, 2, max)
+#Negative Ideal Solution
+negative_ideal <- apply(weighted_normalized_matrix, 2, min)
+#Euclidean distance function
+difference <- function(x, y) {
+sqrt(sum((x - y)^2))
+}
+# Calculating the Euclidean distance to Positive Ideal Solution (PIS)
+ideal_separation <- apply(weighted_normalized_matrix, 1, function(row) difference(row, positive_ideal))
+#Calculating the Euclidean distance to Negative Ideal Solution (NIS)
+negative_ideal_separation <- apply(weighted_normalized_matrix, 1, function(row) difference(row, negative_ideal))
+#Calculating the relative closeness
+relative_closeness <- negative_ideal_separation / (ideal_separation + negative_ideal_separation)
+#Creating a data frame with results for each year
+result_df <- data.frame(STATES = filtered_data$AREA, Rj = relative_closeness)
+#Ranking in decreasing order
+result_df$Rank <- rank(-result_df$Rj)  
+result_df <- result_df[order(result_df$Rj,decreasing = TRUE), ]
+#Appending to list
+results_list[[year]] <- result_df
+}
+#Loop through each years
+for (year in unique_years) {
+print(paste("Results for Year", year))
+print(results_list[[as.character(year)]])
+}
+#Loop to generate plots based on each year
+library(ggplot2)
+unique_years <- unique(mortality_adjusted$YEAR)
+plots_list <- list()
+for (year in unique_years) {
+results_year <- results_list[[as.character(year)]]
+plot <- ggplot(results_year, aes(x = reorder(STATES, -Rj), y = Rj, fill = Rj)) + geom_bar(stat = "identity") + labs(title = paste("Comparison of Rankings for Year", year), x = "State", y = "Relative Closeness") + theme(axis.text.x = element_text(angle = 45, hjust = 1)) + scale_fill_gradient(low = "dark red", high = "dark green")
+plots_list[[paste0("plot_", year)]] <- plot
+}
+#Arranging 3 plots in one page
+library(gridExtra)
+grid.arrange(
+  plots_list$plot_1999,
+  plots_list$plot_2000,
+  plots_list$plot_2001,
+  ncol = 1
+)
+grid.arrange(
+  plots_list$plot_2002,
+  plots_list$plot_2003,
+  plots_list$plot_2004,
+  ncol = 1
+)
+grid.arrange(
+  plots_list$plot_2005,
+  plots_list$plot_2006,
+  plots_list$plot_2007,
+  ncol = 1
+)
+grid.arrange(
+  plots_list$plot_2008,
+  plots_list$plot_2009,
+  plots_list$plot_2010,
+  ncol = 1
+)
+grid.arrange(
+  plots_list$plot_2011,
+  plots_list$plot_2012,
+  ncol = 1
+)
+#The most affected (Rank 1) and least affected (last rank) for each year
+most_affected <- lapply(results_list, function(result_df) {
+result_df[which.min(result_df$Rank), ]
+})
+least_affected <- lapply(results_list, function(result_df) {
+result_df[which.max(result_df$Rank), ]
+})
+most_affected_df <- do.call(rbind, most_affected)
+least_affected_df <- do.call(rbind, least_affected)
+most_affected_df
+least_affected_df
+#Creating a data frame with ranks for each year
+ranks_df <- data.frame(Year = unique_years)
+for (rank in 1:max(sapply(results_list, function(x) max(x$Rank)))) {
+ranks_df[paste0("Rank_", rank)] <- sapply(results_list, function(result_df) {
+area <- result_df[result_df$Rank == rank, "STATES"]
+if (length(area) == 0) {
+return(NA)
+} else {
+return(area)
+}
+})
+}
+ranks_df
+library(knitr)
+library(kableExtra)
+kable(ranks_df, "html") %>%
+kable_styling()
+#Creating a data frame with ranks for each year
+ranks_df <- data.frame(STATES = unique(mortality_adjusted$AREA))
+for (year in unique_years) {
+ranks_df[[as.character(year)]] <- sapply(ranks_df$STATES, function(state) {
+result_df <- results_list[[as.character(year)]]
+rank <- result_df[result_df$STATES == state, "Rank"]
+if (length(rank) == 0) {
+return(NA)
+} else {
+return(rank)
+}
+})
+}
+ranks_df[, -1] <- lapply(ranks_df[, -1], as.numeric)
+ranks_df
+kable(ranks_df, "html") %>%
+kable_styling()
+#Initializing an empty data frame for overall ranks
+overall_ranking <- data.frame(STATES = character(0), Overall_Rank = integer(0), Frequency = integer(0))
+#Loop through each state
+for (state in unique(ranks_df$STATES)) {
+state_ranks <- unlist(ranks_df[ranks_df$STATES == state, -1])
+rank_counts <- table(state_ranks, useNA = "ifany")
+max_rank <- as.integer(names(which.max(rank_counts)))
+max_rank_frequency <- as.integer(max(rank_counts))
+if (is.na(max_rank)) {
+max_rank <- as.integer(names(rank_counts[order(-rank_counts)])[2])
+max_rank_frequency <- as.integer(rank_counts[order(-rank_counts)][2])
+}
+current_state_df <- data.frame(STATES = state, Overall_Rank = max_rank, Frequency = max_rank_frequency)
+overall_ranking <- rbind(overall_ranking, current_state_df)
+}
+#Order by overall rank
+overall_ranking2 <- overall_ranking[order(overall_ranking$Overall_Rank), ]
+overall_ranking2
+Weighted2<-ggplot(overall_ranking2, aes(x = reorder(STATES, Overall_Rank), y = Overall_Rank, fill = as.factor(Frequency))) + geom_bar(stat = "identity", position = "dodge") + labs(title = "Overall Ranking of States Based on Normalized ColSums Approach",x = "States",y = "Overall Rank") + scale_fill_manual(values = c("blue", "green", "black", "yellow", "red","purple","orange","brown")) + theme_minimal() + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+#Getting the year
+unique_years <- unique(mortality_adjusted$YEAR) 
+results_list <- list()
+#USing the normalized crude_rate
+#0.128093159,0.173216885,0.002911208,0.029839884,0.052401747,0.03930131,0.372634643,0.019650655,0.181950509	
+#Using the Colsums/total approach
+columns <- mortality_adjusted[, 3:11]
+column_sums <- colSums(columns)
+total_sum <- sum(as.matrix(columns))
+column_proportions <- column_sums / total_sum
+column_proportions
+#Using this as weights
+#Loop over each year
+for (year in unique_years) {
+#Filtering data 
+filtered_data <- mortality_adjusted[mortality_adjusted$YEAR == year, , drop = FALSE]  # Ensure drop = FALSE
+#Creating a new data frame
+filtered_data <- data.frame(filtered_data, row.names = NULL)
+#Assigning the filtered data to a variable 
+assign(paste0("mortality_", year), filtered_data)
+#Decision Matrix
+decision_matrix <- as.matrix(filtered_data[, 3:11])
+#Normalization
+normalized_matrix <- decision_matrix / sqrt(colSums(decision_matrix^2))
+#Weights based on their prevalence
+weights<-c(0.128093159,0.173216885,0.002911208,0.029839884,0.052401747,0.03930131,0.372634643,0.019650655,0.181950509)
+#Weighted Normalization
+weighted_normalized_matrix <- normalized_matrix
+for (j in seq_along(weights)) {
+weighted_normalized_matrix[, j] <- weighted_normalized_matrix[, j] * weights[j]
+}
+#Positive Ideal Solution
+positive_ideal <- apply(weighted_normalized_matrix, 2, max)
+#Negative Ideal Solution
+negative_ideal <- apply(weighted_normalized_matrix, 2, min)
+#Euclidean distance function
+difference <- function(x, y) {
+sqrt(sum((x - y)^2))
+}
+# Calculating the Euclidean distance to Positive Ideal Solution (PIS)
+ideal_separation <- apply(weighted_normalized_matrix, 1, function(row) difference(row, positive_ideal))
+#Calculating the Euclidean distance to Negative Ideal Solution (NIS)
+negative_ideal_separation <- apply(weighted_normalized_matrix, 1, function(row) difference(row, negative_ideal))
+#Calculating the relative closeness
+relative_closeness <- negative_ideal_separation / (ideal_separation + negative_ideal_separation)
+#Creating a data frame with results for each year
+result_df <- data.frame(STATES = filtered_data$AREA, Rj = relative_closeness)
+#Ranking in decreasing order
+result_df$Rank <- rank(-result_df$Rj)  
+result_df <- result_df[order(result_df$Rj,decreasing = TRUE), ]
+#Appending to list
+results_list[[year]] <- result_df
+}
+#Loop through each years
+for (year in unique_years) {
+print(paste("Results for Year", year))
+print(results_list[[as.character(year)]])
+}
+#Loop to generate plots based on each year
+library(ggplot2)
+unique_years <- unique(mortality_adjusted$YEAR)
+plots_list <- list()
+for (year in unique_years) {
+results_year <- results_list[[as.character(year)]]
+plot <- ggplot(results_year, aes(x = reorder(STATES, -Rj), y = Rj, fill = Rj)) + geom_bar(stat = "identity") + labs(title = paste("Comparison of Rankings for Year", year), x = "State", y = "Relative Closeness") + theme(axis.text.x = element_text(angle = 45, hjust = 1)) + scale_fill_gradient(low = "dark red", high = "dark green")
+plots_list[[paste0("plot_", year)]] <- plot
+}
+#Arranging 3 plots in one page
+library(gridExtra)
+grid.arrange(
+  plots_list$plot_1999,
+  plots_list$plot_2000,
+  plots_list$plot_2001,
+  ncol = 1
+)
+grid.arrange(
+  plots_list$plot_2002,
+  plots_list$plot_2003,
+  plots_list$plot_2004,
+  ncol = 1
+)
+grid.arrange(
+  plots_list$plot_2005,
+  plots_list$plot_2006,
+  plots_list$plot_2007,
+  ncol = 1
+)
+grid.arrange(
+  plots_list$plot_2008,
+  plots_list$plot_2009,
+  plots_list$plot_2010,
+  ncol = 1
+)
+grid.arrange(
+  plots_list$plot_2011,
+  plots_list$plot_2012,
+  ncol = 1
+)
+#The most affected (Rank 1) and least affected (last rank) for each year
+most_affected <- lapply(results_list, function(result_df) {
+result_df[which.min(result_df$Rank), ]
+})
+least_affected <- lapply(results_list, function(result_df) {
+result_df[which.max(result_df$Rank), ]
+})
+most_affected_df <- do.call(rbind, most_affected)
+least_affected_df <- do.call(rbind, least_affected)
+most_affected_df
+least_affected_df
+#Creating a data frame with ranks for each year
+ranks_df <- data.frame(Year = unique_years)
+for (rank in 1:max(sapply(results_list, function(x) max(x$Rank)))) {
+ranks_df[paste0("Rank_", rank)] <- sapply(results_list, function(result_df) {
+area <- result_df[result_df$Rank == rank, "STATES"]
+if (length(area) == 0) {
+return(NA)
+} else {
+return(area)
+}
+})
+}
+ranks_df
+library(knitr)
+library(kableExtra)
+kable(ranks_df, "html") %>%
+kable_styling()
+#Creating a data frame with ranks for each year
+ranks_df <- data.frame(STATES = unique(mortality_adjusted$AREA))
+for (year in unique_years) {
+ranks_df[[as.character(year)]] <- sapply(ranks_df$STATES, function(state) {
+result_df <- results_list[[as.character(year)]]
+rank <- result_df[result_df$STATES == state, "Rank"]
+if (length(rank) == 0) {
+return(NA)
+} else {
+return(rank)
+}
+})
+}
+ranks_df[, -1] <- lapply(ranks_df[, -1], as.numeric)
+ranks_df
+kable(ranks_df, "html") %>%
+kable_styling()
+#Initializing an empty data frame for overall ranks
+overall_ranking <- data.frame(STATES = character(0), Overall_Rank = integer(0), Frequency = integer(0))
+#Loop through each state
+for (state in unique(ranks_df$STATES)) {
+state_ranks <- unlist(ranks_df[ranks_df$STATES == state, -1])
+rank_counts <- table(state_ranks, useNA = "ifany")
+max_rank <- as.integer(names(which.max(rank_counts)))
+max_rank_frequency <- as.integer(max(rank_counts))
+if (is.na(max_rank)) {
+max_rank <- as.integer(names(rank_counts[order(-rank_counts)])[2])
+max_rank_frequency <- as.integer(rank_counts[order(-rank_counts)][2])
+}
+current_state_df <- data.frame(STATES = state, Overall_Rank = max_rank, Frequency = max_rank_frequency)
+overall_ranking <- rbind(overall_ranking, current_state_df)
+}
+#Order by overall rank
+overall_ranking3 <- overall_ranking[order(overall_ranking$Overall_Rank), ]
+overall_ranking3
+Weighted3<-ggplot(overall_ranking3, aes(x = reorder(STATES, Overall_Rank), y = Overall_Rank, fill = as.factor(Frequency))) + geom_bar(stat = "identity", position = "dodge") + labs(title = "Overall Ranking of States Based on Normalized Age Adjusted Rate",x = "States",y = "Overall Rank") + scale_fill_manual(values = c("darkblue", "darkgreen", "darkred","brown" , "darkgrey","gold","skyblue","navyblue","maroon")) + theme_minimal() + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+#Comparisons
+grid.arrange(
+  Weighted1,
+  Weighted2,
+  Weighted3,
+  ncol = 1
+)
+#combined_rankings <- merge(overall_ranking[, c("STATES", "Overall_Rank")], overall_ranking2[, c("STATES", "Overall_Rank")], by = "STATES", suffixes = c("", "_2"), all = TRUE)
+#combined_rankings <- combined_rankings[order(combined_rankings$Overall_Rank), ]
+#print(combined_rankings)
+
+
+
+
+
+```
